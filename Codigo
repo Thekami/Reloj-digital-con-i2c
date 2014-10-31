@@ -1,0 +1,306 @@
+//La configuracion de Bits: 1=modificar cadencia de envio 2=offset 3=version Firmware 4=Resolucion de bits
+//ATENCION EN LA FUNCION LEERBUFFER!!!!
+
+#include <16F877A.h>
+#device adc=10
+#fuses XT, NOWDT, PUT, NODEBUG, NOBROWNOUT, NOPROTECT, NOLVP, NOWRT
+#use delay (clock= 4000000)
+#use i2c(MASTER, SCL=PIN_C3, SDA=PIN_C4)
+#use rs232(baud=9600, bits=8, parity=N, stop=1, xmit=pin_c6, rcv=pin_c7) //los ultimos dos parametros son para saber por donde mando y recibo informacion al pic
+#use fast_io(A)
+#use fast_io(B)
+#use fast_io(D)
+#define BufferSize 18
+#include <string.h>
+
+int ini;
+
+//Vectores
+char buffer[BufferSize];
+
+//Variables de los valores enviados y recibidos
+int sec, min, hrs, numdia, mes, dia, year;
+char nombreMes[11];
+
+// Contadores
+int i=0, iniciar=0;
+
+char mat[7][10] = {"Domingo", "Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado"};
+
+//Timer0
+int16 leerFecha=0,enviarFecha=0,segundos=0;
+int1  readFecha=false, sendFecha=false;
+
+//Manipulacion del buffer
+int1 readBuffer=false,header=false;
+
+int1 execute=true;
+char empezar;
+int8 aux=0;
+
+#int_rtcc
+void Timer0_isr()  //interrupccion de retraso a 3 hertz para que pasen 0.3 segs
+{
+   leerFecha++; //para saber cuando pasen .3 segs
+   enviarFecha++; //para saber cuando pase un segundo y enviar datos
+   if (leerFecha==15)
+   {
+      readFecha=true; //Han pasado 3Hz.
+      leerFecha=0;
+   }
+
+ if (enviarFecha==15) //para saber si ha pasado un segundo
+ {
+    segundos++;
+    sendFecha=true;
+    enviarFecha=0;
+ }
+}
+
+#int_rda
+void RS232_isr()
+{
+while(kbhit())
+{
+   empezar=getc(); //recibe un caracter de la trama enviada
+   if (empezar=='H') //solo si es H, no se escribe en el buffer
+   {
+      header=true; //se activa la bandera para indicar que ya encontramos un header
+      aux=i; //se guarda la posicion donde esta el header en otra variable
+   }
+   else
+   {
+      if(empezar=='T')
+      { //si se encontro el Trailer
+         header=false; // desactivamos Header para que ya no siga escribiendo
+         buffer[i]=empezar; // lo escribimos en el buffer
+         i++; // aumentamos nuestro indice
+         readBuffer=true; //Ya tenemos nuestra trama lista para analizar
+      }
+      //else //Se le da una ultima oportunidad a latrama de ser analizada // yo voy a quitar esto Realmente no se necesita
+        // if(i-aux>=tamaño_trama_maximo)
+      //readBuffer=true; //chupame un huevo
+   }
+   if (header==true) // si se encontro el header
+   {
+      buffer[i]=empezar; //se empieza a escribir en el buffer, en el buffer nunca se escribe, hasta que no se encuentra el header
+      i++; //aumentamos nuestro indice 
+   }
+
+   //cuando llegue al maximo tamaño del buffer se reincia
+   if (i>(bufferSize-1))
+   {
+      i=0;
+   }
+  
+}
+  
+}
+
+
+
+
+void leerBuffer()
+{
+   readBuffer=false;
+   
+         if ((iniciar+8) < bufferSize)
+         {
+           if (buffer[iniciar+8]=='T')
+           {
+              buffer[iniciar]=0xFF; //se le cambia el valor en la posicion al header para que ya no vuelva a entrar
+              sec=buffer[iniciar+1]; //almacena los segundos
+              min=buffer[iniciar+2]; //almacena los minutos
+              hrs=buffer[iniciar+3]; //almacena las horas
+              numdia=buffer[iniciar+4]; //almacena el dia que sera ( 0 = domingo, etc)
+              dia=buffer[iniciar+5]; //almacena el numero del dia del mes
+              mes=buffer[iniciar+6]; //almacena el mes
+              year=buffer[iniciar+7]; //almacena el año
+              header=true;
+              execute=true;
+           }
+              
+         }
+}
+  
+
+
+void write()
+{
+   i2c_start();          //inicia la coneccion
+   i2c_write(0xD0);      //escribe la direccion del dispositivo esclavo
+   i2c_write(0x00);      //escribe la direcion de memoria donde se comenzara a guardar
+   i2c_write(sec);       //comeinza a escribir las variables
+   i2c_write(min);
+   i2c_write(hrs);
+   i2c_write(numdia);
+   i2c_write(dia);
+   i2c_write(mes);
+   i2c_write(year);
+   i2c_stop();           //detiene la coneccion
+}
+
+
+/*   if((sec <= 0x59) && (min <= 0x59) && (hrs <= 0x12) && (numdia <= 0x06) && (dia <= 0x31) && (mes <= 0x12) && (year <= 0x99) &&(numdia>0) &&
+      (mes>0) &&(dia>0)) */
+
+void valida()      //funcion para escribir datos de la pic en memoria del ds1307
+{
+    execute=false;
+    
+    if (((sec>>4) <= 5) && ((sec & 0x0F) <= 9) && ((min >> 4) <= 5) && ((min & 0x0F) <= 9) && ((hrs >> 4) <= 2) && ((hrs & 0x0F) <= 9) &&
+       (hrs<=0x24) && (numdia > 0) && (numdia <= 7) && ((dia >> 4) <= 3) && ((dia & 0x0F) <= 9) && (dia<=0x31) && (dia > 0x00 ) 
+       && ((mes >> 4) <= 1) && ((mes & 0x0F) <= 9) && (mes<=0x12) && (mes > 0x00) && ((year >> 4) <= 9) && ((year & 0x0F) <= 9))  //H$08$09$12$06$25$11$24T
+    {    
+      if(mes == 0x02)
+      {
+         if (((dia >> 4) <= 2) && ((dia & 0x0F) <= 0x09))
+         {
+            write();
+         }
+         else
+         {
+            printf("El mes de Febrero solo puede tener como maximo 29 dias\r\n");
+         } 
+      }
+      else 
+      {
+        write();
+      }
+   }
+   else
+   {
+      printf("Alguno de los valores esta fuera de rango, revisa la trama\r\n");
+   }
+   
+}
+
+void read()       //funcion para escribir datos de la pic en memoria del ds1307
+{
+   i2c_start();
+   i2c_write(0xD0);         //escribo la direccion del esclavo en modo escritura para
+   i2c_write(0x00);         //luego poder escribir la direccion de memoria donde empezare a guardar,
+   i2c_start();             //reinicio la coneccion
+   i2c_write(0xD1);         //ahora reescribo la direccion del esclavo pero en modo lectura
+   sec = i2c_read();        //para comenzar a leer datos y guardarlos en variables
+   min = i2c_read();
+   hrs = i2c_read();
+   numdia = i2c_read();
+   dia = i2c_read();
+   mes = i2c_read();
+   year = i2c_read(0);
+   i2c_stop();
+   
+switch(mes)
+{
+case 0x01:
+nombreMes = "Enero";
+break;
+
+case 0x02:
+nombreMes = "Febrero";
+break;
+
+case 0x03:
+nombreMes = "Marzo";
+break;
+
+case 0x04:
+nombreMes = "Abril";
+break;
+
+case 0x05:
+nombreMes = "Mayo";
+break;
+
+case 0x06:
+nombreMes = "Junio";
+break;
+
+case 0x07:
+nombreMes = "Julio";
+break;
+
+case 0x08:
+nombreMes = "Agosto";
+break;
+
+case 0x09:
+nombreMes = "Septiembre";
+break;
+
+case 0x10:
+nombreMes = "Octubre";
+break;
+
+case 0x11:
+nombreMes = "Noviembre";
+break;
+
+case 0x12:
+nombreMes = "Diciembre";
+break;
+
+}
+   
+}
+
+
+void ch_active()
+{
+   i2c_start();
+   i2c_write(0xD0);         //escribo la direccion del esclavo en modo escritura para
+   i2c_write(0x00);         //luego poder escribir la direccion de memoria donde empezare a guardar,
+   i2c_start();             //reinicio la coneccion
+   i2c_write(0xD1);         //ahora reescribo la direccion del esclavo pero en modo lectura
+   ini = i2c_read(0); 
+   i2c_stop();
+   ini = (ini & 0x7F);
+   i2c_start();
+   i2c_write(0xD0);
+   i2c_write(0x00);
+   i2c_write(ini);
+   i2c_stop();
+}
+
+
+void main(void)
+{
+ set_tris_A(0x0B);
+
+//Timer0 y RS232
+   enable_interrupts(global);
+   enable_interrupts(int_rtcc);
+   enable_interrupts(int_rda);
+
+   setup_timer_0(rtcc_internal | rtcc_div_256);
+
+   set_timer0(0x00);
+
+
+   ch_active();
+
+while(true)
+{
+   if (readBuffer)
+   {
+       leerBuffer();
+       if (execute)
+       valida();
+   }
+   
+  /* if (readFecha)
+      {
+         readFecha=false;
+         write();
+         read();   
+      } */
+      
+   if (sendFecha)
+   {
+      sendFecha=false;
+      read();
+      printf("La fecha es: %s %X/%s/20%X  y la hora es  %X:%X:%X\r\n",mat[numdia-1],dia,nombreMes,year,hrs,min,sec);
+   }
+}
+}
